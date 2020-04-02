@@ -5,6 +5,8 @@
 package nodespec
 
 import (
+	corev1 "k8s.io/api/core/v1"
+
 	esv1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/keystore"
@@ -13,7 +15,6 @@ import (
 	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/settings"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/user"
 	esvolume "github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/volume"
-	corev1 "k8s.io/api/core/v1"
 )
 
 var downwardAPIVolume = volume.DownwardAPI{}
@@ -22,11 +23,11 @@ func buildVolumes(esName string, nodeSpec esv1.NodeSet, keystoreResources *keyst
 
 	configVolume := settings.ConfigSecretVolume(esv1.StatefulSet(esName, nodeSpec.Name))
 	probeSecret := volume.NewSelectiveSecretVolumeWithMountPath(
-		user.ElasticInternalUsersSecretName(esName), esvolume.ProbeUserVolumeName,
-		esvolume.ProbeUserSecretMountPath, []string{user.InternalProbeUserName},
+		esv1.InternalUsersSecret(esName), esvolume.ProbeUserVolumeName,
+		esvolume.ProbeUserSecretMountPath, []string{user.ProbeUserName},
 	)
 	httpCertificatesVolume := volume.NewSecretVolumeWithMountPath(
-		certificates.HTTPCertsInternalSecretName(esv1.ESNamer, esName),
+		certificates.InternalCertsSecretName(esv1.ESNamer, esName),
 		esvolume.HTTPCertificatesSecretVolumeName,
 		esvolume.HTTPCertificatesSecretVolumeMountPath,
 	)
@@ -40,7 +41,7 @@ func buildVolumes(esName string, nodeSpec esv1.NodeSet, keystoreResources *keyst
 		esv1.UnicastHostsConfigMap(esName), esvolume.UnicastHostsVolumeName, esvolume.UnicastHostsVolumeMountPath,
 	)
 	usersSecretVolume := volume.NewSecretVolumeWithMountPath(
-		user.XPackFileRealmSecretName(esName),
+		esv1.RolesAndFileRealmSecret(esName),
 		esvolume.XPackFileRealmVolumeName,
 		esvolume.XPackFileRealmVolumeMountPath,
 	)

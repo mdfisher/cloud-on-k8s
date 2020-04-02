@@ -1,3 +1,7 @@
+// This library overrides the default checkout behavior to enable sleep+retries if there are errors
+// Added to help overcome some recurring github connection issues
+@Library('apm@current') _
+
 def failedTests = []
 def lib
 
@@ -50,7 +54,7 @@ pipeline {
             steps {
                 sh '.ci/setenvconfig e2e/master'
                 script {
-                    env.SHELL_EXIT_CODE = sh(returnStatus: true, script: 'make -C .ci get-monitoring-secrets get-test-license get-elastic-public-key TARGET=ci-build-operator-e2e-run ci')
+                    env.SHELL_EXIT_CODE = sh(returnStatus: true, script: 'make -C .ci get-test-artifacts TARGET=ci-build-operator-e2e-run ci')
 
                     sh 'make -C .ci TARGET=e2e-generate-xml ci'
                     junit "e2e-tests.xml"

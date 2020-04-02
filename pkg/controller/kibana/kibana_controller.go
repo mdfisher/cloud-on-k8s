@@ -24,9 +24,7 @@ import (
 	"go.elastic.co/apm"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -48,7 +46,7 @@ var log = logf.Log.WithName(name)
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager, params operator.Parameters) error {
 	reconciler := newReconciler(mgr, params)
-	c, err := add(mgr, reconciler)
+	c, err := common.NewController(mgr, name, reconciler, params)
 	if err != nil {
 		return err
 	}
@@ -60,17 +58,10 @@ func newReconciler(mgr manager.Manager, params operator.Parameters) *ReconcileKi
 	client := k8s.WrapClient(mgr.GetClient())
 	return &ReconcileKibana{
 		Client:         client,
-		scheme:         mgr.GetScheme(),
 		recorder:       mgr.GetEventRecorderFor(name),
 		dynamicWatches: watches.NewDynamicWatches(),
 		params:         params,
 	}
-}
-
-// add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) (controller.Controller, error) {
-	// Create a new controller
-	return controller.New(name, mgr, controller.Options{Reconciler: r})
 }
 
 func addWatches(c controller.Controller, r *ReconcileKibana) error {
@@ -116,7 +107,6 @@ var _ reconcile.Reconciler = &ReconcileKibana{}
 // ReconcileKibana reconciles a Kibana object
 type ReconcileKibana struct {
 	k8s.Client
-	scheme   *runtime.Scheme
 	recorder record.EventRecorder
 
 	dynamicWatches watches.DynamicWatches
@@ -147,10 +137,9 @@ func (r *ReconcileKibana) Reconcile(request reconcile.Request) (reconcile.Result
 		return reconcile.Result{}, tracing.CaptureError(ctx, err)
 	}
 
-	// skip reconciliation if paused
-	if common.IsPaused(kb.ObjectMeta) {
-		log.Info("Object is paused. Skipping reconciliation", "namespace", kb.Namespace, "kibana_name", kb.Name)
-		return common.PauseRequeue, nil
+	if common.IsUnmanaged(kb.ObjectMeta) {
+		log.Info("Object is currently not managed by this controller. Skipping reconciliation", "namespace", kb.Namespace, "kibana_name", kb.Name)
+		return reconcile.Result{}, nil
 	}
 
 	// check for compatibility with the operator version
@@ -190,7 +179,12 @@ func (r *ReconcileKibana) isCompatible(ctx context.Context, kb *kbv1.Kibana) (bo
 }
 
 func (r *ReconcileKibana) doReconcile(ctx context.Context, request reconcile.Request, kb *kbv1.Kibana) (reconcile.Result, error) {
-	driver, err := newDriver(r, r.scheme, r.dynamicWatches, r.recorder, kb)
+	// Run validation in case the webhook is disabled
+	if err := r.validate(ctx, kb); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	driver, err := newDriver(r, r.dynamicWatches, r.recorder, kb)
 	if err != nil {
 		return reconcile.Result{}, tracing.CaptureError(ctx, err)
 	}
@@ -200,7 +194,7 @@ func (r *ReconcileKibana) doReconcile(ctx context.Context, request reconcile.Req
 
 	// update status
 	err = r.updateStatus(ctx, state)
-	if err != nil && errors.IsConflict(err) {
+	if err != nil && apierrors.IsConflict(err) {
 		log.V(1).Info("Conflict while updating status", "namespace", kb.Namespace, "kibana_name", kb.Name)
 		return reconcile.Result{Requeue: true}, nil
 	}
@@ -208,6 +202,19 @@ func (r *ReconcileKibana) doReconcile(ctx context.Context, request reconcile.Req
 	res, err := results.WithError(err).Aggregate()
 	k8s.EmitErrorEvent(r.recorder, err, kb, events.EventReconciliationError, "Reconciliation error: %v", err)
 	return res, err
+}
+
+func (r *ReconcileKibana) validate(ctx context.Context, kb *kbv1.Kibana) error {
+	span, vctx := apm.StartSpan(ctx, "validate", tracing.SpanTypeApp)
+	defer span.End()
+
+	if err := kb.ValidateCreate(); err != nil {
+		log.Error(err, "Validation failed")
+		k8s.EmitErrorEvent(r.recorder, err, kb, events.EventReasonValidation, err.Error())
+		return tracing.CaptureError(vctx, err)
+	}
+
+	return nil
 }
 
 func (r *ReconcileKibana) updateStatus(ctx context.Context, state State) error {
@@ -231,7 +238,6 @@ func (r *ReconcileKibana) updateStatus(ctx context.Context, state State) error {
 }
 
 func (r *ReconcileKibana) onDelete(obj types.NamespacedName) {
-	// Clean up watches
+	// Clean up watches set on secure settings
 	r.dynamicWatches.Secrets.RemoveHandlerForKey(keystore.SecureSettingsWatchName(obj))
-	r.dynamicWatches.Secrets.RemoveHandlerForKey(secretWatchKey(obj))
 }

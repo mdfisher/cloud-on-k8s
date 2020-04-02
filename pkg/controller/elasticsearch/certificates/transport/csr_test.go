@@ -9,11 +9,12 @@ import (
 	"net"
 	"testing"
 
-	esv1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1"
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+
+	esv1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
 )
 
 // roundTripSerialize does a serialization round-trip of the certificate in order to make sure any extra extensions
@@ -66,6 +67,7 @@ func Test_createValidatedCertificateTemplate(t *testing.T) {
 
 func Test_buildGeneralNames(t *testing.T) {
 	expectedCommonName := "test-pod-name.node.test-es-name.test-namespace.es.local"
+	expectedTransportSvcName := "test-es-name-es-transport.test-namespace.svc"
 	otherName, err := (&certificates.UTF8StringValuedOtherName{
 		OID:   certificates.CommonNameObjectIdentifier,
 		Value: expectedCommonName,
@@ -90,6 +92,7 @@ func Test_buildGeneralNames(t *testing.T) {
 			want: []certificates.GeneralName{
 				{OtherName: *otherName},
 				{DNSName: expectedCommonName},
+				{DNSName: expectedTransportSvcName},
 				{IPAddress: net.ParseIP(testIP).To4()},
 				{IPAddress: net.ParseIP("127.0.0.1").To4()},
 			},

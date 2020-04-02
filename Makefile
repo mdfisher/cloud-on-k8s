@@ -46,7 +46,7 @@ REPOSITORY  ?= eck
 NAME        ?= eck-operator
 SNAPSHOT    ?= true
 VERSION     ?= $(shell cat VERSION)
-TAG         ?= $(shell git rev-parse --short --verify HEAD)
+TAG         ?= $(shell git rev-parse --short=8 --verify HEAD)
 IMG_NAME    ?= $(NAME)$(IMG_SUFFIX)
 IMG_VERSION ?= $(VERSION)-$(TAG)
 
@@ -141,6 +141,9 @@ integration-xml: clean generate-crds
 
 lint:
 	golangci-lint run
+
+shellcheck:
+	shellcheck $(shell find . -type f -name "*.sh")
 
 #############################
 ##  --       Run       --  ##
@@ -379,6 +382,11 @@ e2e-run:
 		--log-verbosity=$(LOG_VERBOSITY) \
 		--log-to-file=$(E2E_JSON) \
 		--test-timeout=$(TEST_TIMEOUT) \
+		--pipeline=$(PIPELINE) \
+		--build-number=$(BUILD_NUMBER) \
+		--provider=$(E2E_PROVIDER) \
+		--clusterName=$(CLUSTER_NAME) \
+		--kubernetes-version=$(KUBERNETES_VERSION) \
 		--monitoring-secrets=$(MONITORING_SECRETS)
 
 e2e-generate-xml:
@@ -408,7 +416,7 @@ e2e-local:
 ##  --    Continuous integration    --  ##
 ##########################################
 
-ci-check: check-license-header lint generate check-local-changes
+ci-check: check-license-header lint shellcheck generate check-local-changes
 
 ci: unit-xml integration-xml docker-build reattach-pv
 

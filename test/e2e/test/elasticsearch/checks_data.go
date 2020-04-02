@@ -19,13 +19,16 @@ import (
 	"github.com/go-test/deep"
 )
 
+const (
+	DataIntegrityIndex = "data-integrity-check"
+)
+
 type DataIntegrityCheck struct {
-	clientFactory func() (client.Client, error) // recreate clients for cases where we switch scheme in tests
-	indexName     string
-	numShards     int
-	numReplicas   int
-	sampleData    map[string]interface{}
-	docCount      int
+	clientFactory       func() (client.Client, error) // recreate clients for cases where we switch scheme in tests
+	indexName           string
+	createIndexSettings createIndexSettings
+	sampleData          map[string]interface{}
+	docCount            int
 }
 
 func NewDataIntegrityCheck(k *test.K8sClient, b Builder) *DataIntegrityCheck {
@@ -33,14 +36,38 @@ func NewDataIntegrityCheck(k *test.K8sClient, b Builder) *DataIntegrityCheck {
 		clientFactory: func() (client.Client, error) {
 			return NewElasticsearchClient(b.Elasticsearch, k)
 		},
-		indexName: "data-integrity-check",
+		indexName: DataIntegrityIndex,
 		sampleData: map[string]interface{}{
 			"foo": "bar",
 		},
-		docCount:    5,
-		numShards:   3,
-		numReplicas: dataIntegrityReplicas(b),
+		docCount: 5,
+		createIndexSettings: createIndexSettings{
+			IndexSettings{
+				NumberOfShards:   3,
+				NumberOfReplicas: dataIntegrityReplicas(b),
+			},
+		},
 	}
+}
+
+func (dc *DataIntegrityCheck) WithSoftDeletesEnabled(value bool) *DataIntegrityCheck {
+	dc.createIndexSettings.SoftDeletesEnabled = &value
+	return dc
+}
+
+type createIndexSettings struct {
+	IndexSettings `json:"settings"`
+}
+
+type IndexSettings struct {
+	NumberOfShards     int   `json:"number_of_shards"`
+	NumberOfReplicas   int   `json:"number_of_replicas"`
+	SoftDeletesEnabled *bool `json:"soft_deletes.enabled,omitempty"`
+}
+
+func (dc *DataIntegrityCheck) ForIndex(indexName string) *DataIntegrityCheck {
+	dc.indexName = indexName
+	return dc
 }
 
 func (dc *DataIntegrityCheck) Init() error {
@@ -48,16 +75,11 @@ func (dc *DataIntegrityCheck) Init() error {
 	if err != nil {
 		return err
 	}
-	indexSettings := `
-{
-    "settings" : {
-        "index" : {
-            "number_of_shards" : %d,
-            "number_of_replicas" : %d
-        }
-    }
-}
-`
+	createIndexSettings, err := json.Marshal(dc.createIndexSettings)
+	if err != nil {
+		return err
+	}
+
 	// delete index if running check multiple times
 	indexDeletion, err := http.NewRequest(
 		http.MethodDelete,
@@ -77,7 +99,7 @@ func (dc *DataIntegrityCheck) Init() error {
 	indexCreation, err := http.NewRequest(
 		http.MethodPut,
 		fmt.Sprintf("/%s", dc.indexName),
-		bytes.NewBufferString(fmt.Sprintf(indexSettings, dc.numShards, dc.numReplicas)),
+		bytes.NewBuffer(createIndexSettings),
 	)
 	if err != nil {
 		return err

@@ -6,10 +6,10 @@ package config
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/elastic/cloud-on-k8s/pkg/about"
 	kbv1 "github.com/elastic/cloud-on-k8s/pkg/apis/kibana/v1"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/reconciler"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/kibana/label"
@@ -17,7 +17,6 @@ import (
 	"go.elastic.co/apm"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/scheme"
 )
 
 // ReconcileConfigSecret reconciles the expected Kibana config secret for the given Kibana resource.
@@ -44,30 +43,16 @@ func ReconcileConfigSecret(
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: kb.Namespace,
 			Name:      SecretName(kb),
-			Labels: map[string]string{
+			Labels: common.AddCredentialsLabel(map[string]string{
 				label.KibanaNameLabelName: kb.Name,
-			},
+			}),
 		},
 		Data: map[string][]byte{
 			SettingsFilename:  settingsYamlBytes,
 			telemetryFilename: telemetryYamlBytes,
 		},
 	}
-	reconciled := corev1.Secret{}
-	if err := reconciler.ReconcileResource(reconciler.Params{
-		Client:     client,
-		Scheme:     scheme.Scheme,
-		Owner:      &kb,
-		Expected:   &expected,
-		Reconciled: &reconciled,
-		NeedsUpdate: func() bool {
-			return !reflect.DeepEqual(reconciled.Data, expected.Data)
-		},
-		UpdateReconciled: func() {
-			reconciled.Data = expected.Data
-		},
-	}); err != nil {
-		return err
-	}
-	return nil
+
+	_, err = reconciler.ReconcileSecret(client, expected, &kb)
+	return err
 }

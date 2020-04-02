@@ -12,7 +12,6 @@ import (
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/keystore"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/reconciler"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
-	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/certificates"
 	esclient "github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/client"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/nodespec"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/observer"
@@ -34,7 +33,6 @@ func (d *defaultDriver) reconcileNodeSpecs(
 	observedState observer.State,
 	resourcesState reconcile.ResourcesState,
 	keystoreResources *keystore.Resources,
-	certResources *certificates.CertificateResources,
 ) *reconciler.Results {
 	span, ctx := apm.StartSpan(ctx, "reconcile_node_spec", tracing.SpanTypeApp)
 	defer span.End()
@@ -55,7 +53,7 @@ func (d *defaultDriver) reconcileNodeSpecs(
 		return results.WithError(err)
 	}
 
-	expectedResources, err := nodespec.BuildExpectedResources(d.ES, keystoreResources, d.Scheme(), certResources, actualStatefulSets)
+	expectedResources, err := nodespec.BuildExpectedResources(d.ES, keystoreResources, actualStatefulSets)
 	if err != nil {
 		return results.WithError(err)
 	}
@@ -71,7 +69,6 @@ func (d *defaultDriver) reconcileNodeSpecs(
 		parentCtx:     ctx,
 		k8sClient:     d.K8sClient(),
 		es:            d.ES,
-		scheme:        d.Scheme(),
 		observedState: observedState,
 		esState:       esState,
 		expectations:  d.Expectations,
@@ -83,7 +80,7 @@ func (d *defaultDriver) reconcileNodeSpecs(
 	}
 
 	// Update PDB to account for new replicas.
-	if err := pdb.Reconcile(d.Client, d.Scheme(), d.ES, actualStatefulSets); err != nil {
+	if err := pdb.Reconcile(d.Client, d.ES, actualStatefulSets); err != nil {
 		return results.WithError(err)
 	}
 

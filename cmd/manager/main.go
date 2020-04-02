@@ -13,35 +13,25 @@ import (
 	"strings"
 	"time"
 
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/container"
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"go.elastic.co/apm"
-	"k8s.io/client-go/kubernetes"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-
-	// allow gcp authentication
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
-
 	"github.com/elastic/cloud-on-k8s/pkg/about"
 	apmv1 "github.com/elastic/cloud-on-k8s/pkg/apis/apm/v1"
+	apmv1beta1 "github.com/elastic/cloud-on-k8s/pkg/apis/apm/v1beta1"
 	esv1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1"
 	esv1beta1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1beta1"
+	entsv1beta1 "github.com/elastic/cloud-on-k8s/pkg/apis/enterprisesearch/v1beta1"
 	kbv1 "github.com/elastic/cloud-on-k8s/pkg/apis/kibana/v1"
+	kbv1beta1 "github.com/elastic/cloud-on-k8s/pkg/apis/kibana/v1beta1"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/apmserver"
 	asesassn "github.com/elastic/cloud-on-k8s/pkg/controller/apmserverelasticsearchassociation"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/association"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common/container"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/operator"
 	controllerscheme "github.com/elastic/cloud-on-k8s/pkg/controller/common/scheme"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/enterprisesearch"
+	entsassn "github.com/elastic/cloud-on-k8s/pkg/controller/entsearchassociation"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/kibana"
 	kbassn "github.com/elastic/cloud-on-k8s/pkg/controller/kibanaassociation"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/license"
@@ -53,7 +43,21 @@ import (
 	licensing "github.com/elastic/cloud-on-k8s/pkg/license"
 	"github.com/elastic/cloud-on-k8s/pkg/utils/net"
 	"github.com/elastic/cloud-on-k8s/pkg/utils/rbac"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+	"go.elastic.co/apm"
+	"go.uber.org/automaxprocs/maxprocs"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp" // allow gcp authentication
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 )
 
 const (
@@ -134,6 +138,11 @@ func init() {
 		"Enables automatic certificates management for the webhook. The Secret and the ValidatingWebhookConfiguration must be created before running the operator",
 	)
 	Cmd.Flags().Int(
+		operator.MaxConcurrentReconcilesFlag,
+		3,
+		"Sets maximum number of concurrent reconciles per controller (Elasticsearch, Kibana, Apm Server etc). Affects the ability of the operator to process changes concurrently.",
+	)
+	Cmd.Flags().Int(
 		operator.MetricsPortFlag,
 		DefaultMetricPort,
 		"Port to use for exposing metrics in the Prometheus format (set 0 to disable)",
@@ -172,6 +181,17 @@ func init() {
 }
 
 func execute() {
+	// update GOMAXPROCS to container cpu limit if necessary
+	_, err := maxprocs.Set(maxprocs.Logger(func(s string, i ...interface{}) {
+		// maxprocs needs an sprintf format string with args, but our logger needs a string with optional key value pairs,
+		// so we need to do this translation
+		log.Info(fmt.Sprintf(s, i...))
+	}))
+	if err != nil {
+		log.Error(err, "Error setting GOMAXPROCS")
+		os.Exit(1)
+	}
+
 	if dev.Enabled {
 		// expose pprof if development mode is enabled
 		mux := http.NewServeMux()
@@ -213,7 +233,7 @@ func execute() {
 
 	// set the default container registry
 	containerRegistry := viper.GetString(operator.ContainerRegistryFlag)
-	log.Info("Setting default container registry", "registry", containerRegistry)
+	log.Info("Setting default container registry", "container_registry", containerRegistry)
 	container.SetContainerRegistry(containerRegistry)
 
 	// Get a config to talk to the apiserver
@@ -301,7 +321,8 @@ func execute() {
 			Validity:     certValidity,
 			RotateBefore: certRotateBefore,
 		},
-		Tracer: tracer,
+		MaxConcurrentReconciles: viper.GetInt(operator.MaxConcurrentReconcilesFlag),
+		Tracer:                  tracer,
 	}
 
 	if viper.GetBool(operator.EnableWebhookFlag) {
@@ -329,12 +350,20 @@ func execute() {
 		log.Error(err, "unable to create controller", "controller", "Kibana")
 		os.Exit(1)
 	}
+	if err = enterprisesearch.Add(mgr, params); err != nil {
+		log.Error(err, "unable to create controller", "controller", "EnterpriseSearch")
+		os.Exit(1)
+	}
 	if err = asesassn.Add(mgr, accessReviewer, params); err != nil {
 		log.Error(err, "unable to create controller", "controller", "ApmServerElasticsearchAssociation")
 		os.Exit(1)
 	}
 	if err = kbassn.Add(mgr, accessReviewer, params); err != nil {
 		log.Error(err, "unable to create controller", "controller", "KibanaAssociation")
+		os.Exit(1)
+	}
+	if err = entsassn.Add(mgr, accessReviewer, params); err != nil {
+		log.Error(err, "unable to create controller", "controller", "EnterpriseSearchAssociation")
 		os.Exit(1)
 	}
 	if err = remoteca.Add(mgr, accessReviewer, params); err != nil {
@@ -421,14 +450,24 @@ func setupWebhook(mgr manager.Manager, certRotation certificates.RotationParams,
 		}
 	}
 
-	// setup v1 and v1beta1 webhooks
-	if err := (&esv1.Elasticsearch{}).SetupWebhookWithManager(mgr); err != nil {
-		log.Error(err, "unable to create webhook", "version", "v1", "webhook", "Elasticsearch")
-		os.Exit(1)
+	// setup webhooks for supported types
+	webhookObjects := []interface {
+		runtime.Object
+		SetupWebhookWithManager(manager.Manager) error
+	}{
+		&apmv1.ApmServer{},
+		&apmv1beta1.ApmServer{},
+		&entsv1beta1.EnterpriseSearch{},
+		&esv1.Elasticsearch{},
+		&esv1beta1.Elasticsearch{},
+		&kbv1.Kibana{},
+		&kbv1beta1.Kibana{},
 	}
-	if err := (&esv1beta1.Elasticsearch{}).SetupWebhookWithManager(mgr); err != nil {
-		log.Error(err, "unable to create webhook", "version", "v1beta1", "webhook", "Elasticsearch")
-		os.Exit(1)
+	for _, obj := range webhookObjects {
+		if err := obj.SetupWebhookWithManager(mgr); err != nil {
+			gvk := obj.GetObjectKind().GroupVersionKind()
+			log.Error(err, "Failed to setup webhook", "group", gvk.Group, "version", gvk.Version, "kind", gvk.Kind)
+		}
 	}
 
 	// wait for the secret to be populated in the local filesystem before returning

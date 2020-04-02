@@ -17,14 +17,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonv1 "github.com/elastic/cloud-on-k8s/pkg/apis/common/v1"
 	kbv1 "github.com/elastic/cloud-on-k8s/pkg/apis/kibana/v1"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates/http"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/deployment"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/watches"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/kibana/label"
@@ -179,8 +177,6 @@ func Test_getStrategyType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := watches.NewDynamicWatches()
-			err := w.Secrets.InjectScheme(scheme.Scheme)
-			assert.NoError(t, err)
 
 			kb := kibanaFixture()
 			kb.Name = tt.expectedKbName
@@ -191,7 +187,7 @@ func Test_getStrategyType(t *testing.T) {
 				client = &failingClient{}
 			}
 
-			d, err := newDriver(client, scheme.Scheme, w, record.NewFakeRecorder(100), kb)
+			d, err := newDriver(client, w, record.NewFakeRecorder(100), kb)
 			assert.NoError(t, err)
 
 			strategy, err := d.getStrategyType(kb)
@@ -369,10 +365,8 @@ func TestDriverDeploymentParams(t *testing.T) {
 
 			client := k8s.WrappedFakeClient(initialObjects...)
 			w := watches.NewDynamicWatches()
-			err := w.Secrets.InjectScheme(scheme.Scheme)
-			require.NoError(t, err)
 
-			d, err := newDriver(client, scheme.Scheme, w, record.NewFakeRecorder(100), kb)
+			d, err := newDriver(client, w, record.NewFakeRecorder(100), kb)
 			require.NoError(t, err)
 
 			got, err := d.deploymentParams(kb)
@@ -417,10 +411,8 @@ func TestMinSupportedVersion(t *testing.T) {
 			kb.Spec.Version = tc.version
 			client := k8s.WrappedFakeClient(defaultInitialObjects()...)
 			w := watches.NewDynamicWatches()
-			err := w.Secrets.InjectScheme(scheme.Scheme)
-			require.NoError(t, err)
 
-			_, err = newDriver(client, scheme.Scheme, w, record.NewFakeRecorder(100), kb)
+			_, err := newDriver(client, w, record.NewFakeRecorder(100), kb)
 			if tc.wantErr {
 				require.Error(t, err)
 			} else {
@@ -478,7 +470,7 @@ func expectedDeploymentParams() deployment.Params {
 						},
 					},
 					{
-						Name: http.HTTPCertificatesSecretVolumeName,
+						Name: certificates.HTTPCertificatesSecretVolumeName,
 						VolumeSource: corev1.VolumeSource{
 							Secret: &corev1.SecretVolumeSource{
 								SecretName: "test-kb-http-certs-internal",
@@ -505,9 +497,9 @@ func expectedDeploymentParams() deployment.Params {
 							MountPath: "/usr/share/kibana/config/elasticsearch-certs",
 						},
 						{
-							Name:      http.HTTPCertificatesSecretVolumeName,
+							Name:      certificates.HTTPCertificatesSecretVolumeName,
 							ReadOnly:  true,
-							MountPath: http.HTTPCertificatesSecretVolumeMountPath,
+							MountPath: certificates.HTTPCertificatesSecretVolumeMountPath,
 						},
 					},
 					Image: "my-image",

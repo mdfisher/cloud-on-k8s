@@ -5,10 +5,11 @@
 package operator
 
 import (
+	"go.elastic.co/apm"
+
 	"github.com/elastic/cloud-on-k8s/pkg/about"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
 	"github.com/elastic/cloud-on-k8s/pkg/utils/net"
-	"go.elastic.co/apm"
 )
 
 // Parameters contain parameters to create new operators.
@@ -23,6 +24,8 @@ type Parameters struct {
 	CACertRotation certificates.RotationParams
 	// CertRotation defines the rotation params for non-CA certificates.
 	CertRotation certificates.RotationParams
+	// MaxConcurrentReconciles controls the number of goroutines per controller.
+	MaxConcurrentReconciles int
 	// Tracer is a shared APM tracer instance or nil
 	Tracer *apm.Tracer
 }

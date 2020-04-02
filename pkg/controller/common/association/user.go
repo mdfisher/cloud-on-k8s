@@ -5,22 +5,22 @@
 package association
 
 import (
-	"bytes"
 	"context"
-
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
-	"go.elastic.co/apm"
-	"golang.org/x/crypto/bcrypt"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 
 	commonv1 "github.com/elastic/cloud-on-k8s/pkg/apis/common/v1"
 	esv1 "github.com/elastic/cloud-on-k8s/pkg/apis/elasticsearch/v1"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/reconciler"
-	commonuser "github.com/elastic/cloud-on-k8s/pkg/controller/common/user"
+	"github.com/elastic/cloud-on-k8s/pkg/controller/common/tracing"
+	eslabel "github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/label"
+	esuser "github.com/elastic/cloud-on-k8s/pkg/controller/elasticsearch/user"
 	"github.com/elastic/cloud-on-k8s/pkg/utils/k8s"
+	"go.elastic.co/apm"
+	"golang.org/x/crypto/bcrypt"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // elasticsearchUserName identifies the associated user in Elasticsearch namespace.
@@ -74,7 +74,6 @@ func ClearTextSecretKeySelector(associated commonv1.Associated, userSuffix strin
 func ReconcileEsUser(
 	ctx context.Context,
 	c k8s.Client,
-	s *runtime.Scheme,
 	associated commonv1.Associated,
 	labels map[string]string,
 	userRoles string,
@@ -84,7 +83,8 @@ func ReconcileEsUser(
 	span, _ := apm.StartSpan(ctx, "reconcile_es_user", tracing.SpanTypeApp)
 	defer span.End()
 
-	pw := commonuser.RandomPasswordBytes()
+	// Add the Elasticsearch name, this is only intended to help the user to filter on these resources
+	labels[eslabel.ClusterNameLabelName] = es.Name
 
 	secKey := secretKey(associated, userObjectSuffix)
 	usrKey := UserKey(associated, userObjectSuffix)
@@ -92,36 +92,26 @@ func ReconcileEsUser(
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secKey.Name,
 			Namespace: secKey.Namespace,
-			Labels:    labels,
+			Labels:    common.AddCredentialsLabel(labels),
 		},
-		Data: map[string][]byte{
-			usrKey.Name: pw,
-		},
+		Data: map[string][]byte{},
 	}
 
-	reconciledSecret := corev1.Secret{}
-	err := reconciler.ReconcileResource(reconciler.Params{
-		Client:     c,
-		Scheme:     s,
-		Owner:      associated,
-		Expected:   &expectedSecret,
-		Reconciled: &reconciledSecret,
-		NeedsUpdate: func() bool {
-			_, ok := reconciledSecret.Data[usrKey.Name]
-			return !ok || !hasExpectedLabels(&expectedSecret, &reconciledSecret)
-		},
-		UpdateReconciled: func() {
-			setExpectedLabels(&expectedSecret, &reconciledSecret)
-			reconciledSecret.Data = expectedSecret.Data
-		},
-	})
-	if err != nil {
+	var password []byte
+	// reuse the existing password if there's one
+	var existingSecret corev1.Secret
+	err := c.Get(k8s.ExtractNamespacedName(&expectedSecret), &existingSecret)
+	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
+	if existingPassword, exists := existingSecret.Data[usrKey.Name]; exists {
+		password = existingPassword
+	} else {
+		password = common.FixedLengthRandomPasswordBytes()
+	}
+	expectedSecret.Data[usrKey.Name] = password
 
-	reconciledPw := reconciledSecret.Data[usrKey.Name] // make sure we don't constantly update the password
-	bcryptHash, err := bcrypt.GenerateFromPassword(reconciledPw, bcrypt.DefaultCost)
-	if err != nil {
+	if _, err := reconciler.ReconcileSecret(c, expectedSecret, associated); err != nil {
 		return err
 	}
 
@@ -130,63 +120,40 @@ func ReconcileEsUser(
 	// and the association label ("for that associated object")
 
 	// merge the association labels provided by the controller with the one needed for a user
-	userLabels := commonuser.NewLabels(k8s.ExtractNamespacedName(&es))
+	userLabels := esuser.AssociatedUserLabels(es)
 	for key, value := range labels {
 		userLabels[key] = value
 	}
 
-	expectedEsUser := &corev1.Secret{
+	expectedEsUser := corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      usrKey.Name,
 			Namespace: usrKey.Namespace,
 			Labels:    userLabels,
 		},
 		Data: map[string][]byte{
-			commonuser.UserName:     []byte(usrKey.Name),
-			commonuser.PasswordHash: bcryptHash,
-			commonuser.UserRoles:    []byte(userRoles),
+			esuser.UserNameField:  []byte(usrKey.Name),
+			esuser.UserRolesField: []byte(userRoles),
 		},
 	}
 
-	reconciledEsSecret := corev1.Secret{}
-	return reconciler.ReconcileResource(reconciler.Params{
-		Client:     c,
-		Scheme:     s,
-		Owner:      &es, // user is owned by the ES resource
-		Expected:   expectedEsUser,
-		Reconciled: &reconciledEsSecret,
-		NeedsUpdate: func() bool {
-			return !hasExpectedLabels(expectedEsUser, &reconciledEsSecret) ||
-				!bytes.Equal(expectedEsUser.Data[commonuser.UserName], reconciledEsSecret.Data[commonuser.UserName]) ||
-				!bytes.Equal(expectedEsUser.Data[commonuser.UserRoles], reconciledEsSecret.Data[commonuser.UserRoles]) ||
-				bcrypt.CompareHashAndPassword(reconciledEsSecret.Data[commonuser.PasswordHash], reconciledPw) != nil
-		},
-		UpdateReconciled: func() {
-			setExpectedLabels(expectedEsUser, &reconciledEsSecret)
-			reconciledEsSecret.Data = expectedEsUser.Data
-		},
-	})
-}
-
-// hasExpectedLabels does a left-biased comparison ensuring all key/value pairs in expected exist in actual.
-func hasExpectedLabels(expected, actual metav1.Object) bool {
-	actualLabels := actual.GetLabels()
-	for k, v := range expected.GetLabels() {
-		if actualLabels[k] != v {
-			return false
+	// reuse the existing hash if valid
+	bcryptHash, err := bcrypt.GenerateFromPassword(password, bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	var existingUserSecret corev1.Secret
+	if err := c.Get(k8s.ExtractNamespacedName(&expectedEsUser), &existingUserSecret); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if existingHash, exists := existingUserSecret.Data[esuser.PasswordHashField]; exists {
+		if bcrypt.CompareHashAndPassword(existingHash, password) == nil {
+			bcryptHash = existingHash
 		}
 	}
-	return true
-}
+	expectedEsUser.Data[esuser.PasswordHashField] = bcryptHash
 
-// setExpectedLabels set the labels from expected into actual.
-func setExpectedLabels(expected, actual metav1.Object) {
-	actualLabels := actual.GetLabels()
-	if actualLabels == nil {
-		actualLabels = make(map[string]string)
-	}
-	for k, v := range expected.GetLabels() {
-		actualLabels[k] = v
-	}
-	actual.SetLabels(actualLabels)
+	owner := es // user is owned by the es resource in es namespace
+	_, err = reconciler.ReconcileSecret(c, expectedEsUser, &owner)
+	return err
 }

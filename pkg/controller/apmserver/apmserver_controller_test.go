@@ -8,25 +8,24 @@ import (
 	"context"
 	"testing"
 
+	"github.com/go-test/deep"
+	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	apmv1 "github.com/elastic/cloud-on-k8s/pkg/apis/apm/v1"
+	apmname "github.com/elastic/cloud-on-k8s/pkg/controller/apmserver/name"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates"
-	"github.com/elastic/cloud-on-k8s/pkg/controller/common/certificates/http"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/defaults"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/deployment"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/keystore"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/operator"
 	"github.com/elastic/cloud-on-k8s/pkg/controller/common/watches"
 	"github.com/elastic/cloud-on-k8s/pkg/utils/k8s"
-	"github.com/go-test/deep"
-	"github.com/stretchr/testify/require"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var certSecretName = "test-apm-server-apm-http-certs-internal" // nolint
@@ -116,7 +115,7 @@ func expectedDeploymentParams() testParams {
 							},
 						},
 						{
-							Name: http.HTTPCertificatesSecretVolumeName,
+							Name: certificates.HTTPCertificatesSecretVolumeName,
 							VolumeSource: corev1.VolumeSource{
 								Secret: &corev1.SecretVolumeSource{
 									SecretName: certSecretName,
@@ -192,22 +191,22 @@ func expectedDeploymentParams() testParams {
 
 func TestReconcileApmServer_deploymentParams(t *testing.T) {
 	apmFixture := &apmv1.ApmServer{
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Name: "test-apm-server",
 		},
-		TypeMeta: v1.TypeMeta{
+		TypeMeta: metav1.TypeMeta{
 			Kind: "apmserver",
 		},
 	}
 	defaultPodSpecParams := PodSpecParams{
 		Version: "1.0",
-		ApmServerSecret: corev1.Secret{
-			ObjectMeta: v1.ObjectMeta{
+		TokenSecret: corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-apm-server-apm-token",
 			},
 		},
 		ConfigSecret: corev1.Secret{
-			ObjectMeta: v1.ObjectMeta{
+			ObjectMeta: metav1.ObjectMeta{
 				Name: "test-apm-config",
 			},
 		},
@@ -232,7 +231,7 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 				podSpecParams: defaultPodSpecParams,
 				initialObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: certSecretName,
 						},
 					},
@@ -248,7 +247,7 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 				podSpecParams: defaultPodSpecParams,
 				initialObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: certSecretName,
 						},
 						Data: map[string][]byte{
@@ -267,7 +266,7 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 				podSpecParams: func() PodSpecParams {
 					params := defaultPodSpecParams
 					params.ConfigSecret = corev1.Secret{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: "test-apm-config",
 						},
 						Data: map[string][]byte{
@@ -278,7 +277,7 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 				}(),
 				initialObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: certSecretName,
 						},
 					},
@@ -304,7 +303,7 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 				}(),
 				initialObjects: []runtime.Object{
 					&corev1.Secret{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Name: certSecretName,
 						},
 					},
@@ -333,10 +332,8 @@ func TestReconcileApmServer_deploymentParams(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client := k8s.WrappedFakeClient(tt.args.initialObjects...)
 			w := watches.NewDynamicWatches()
-			require.NoError(t, w.Secrets.InjectScheme(scheme.Scheme))
 			r := &ReconcileApmServer{
 				Client:         client,
-				scheme:         scheme.Scheme,
 				recorder:       record.NewFakeRecorder(100),
 				dynamicWatches: w,
 			}
@@ -378,6 +375,9 @@ func TestReconcileApmServer_doReconcile(t *testing.T) {
 					Name:      "apmserver",
 					Namespace: "default",
 				},
+				Spec: apmv1.ApmServerSpec{
+					Version: "7.6.1",
+				},
 			},
 			fields: fields{
 				resources:      []runtime.Object{},
@@ -395,12 +395,33 @@ func TestReconcileApmServer_doReconcile(t *testing.T) {
 			},
 			wantRequeue: false,
 		},
+		{
+			name: "Validation failure",
+			as: apmv1.ApmServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "apmserver",
+					Namespace: "default",
+				},
+				Spec: apmv1.ApmServerSpec{
+					Version: "7.x.1",
+				},
+			},
+			fields: fields{
+				resources:      []runtime.Object{},
+				recorder:       record.NewFakeRecorder(100),
+				dynamicWatches: watches.NewDynamicWatches(),
+				Parameters:     operator.Parameters{},
+			},
+			args: args{
+				request: reconcile.Request{},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &ReconcileApmServer{
 				Client:         k8s.WrappedFakeClient(&tt.as),
-				scheme:         scheme.Scheme,
 				recorder:       tt.fields.recorder,
 				dynamicWatches: tt.fields.dynamicWatches,
 				Parameters:     tt.fields.Parameters,
@@ -412,8 +433,50 @@ func TestReconcileApmServer_doReconcile(t *testing.T) {
 			}
 			require.NotNil(t, got)
 			require.Equal(t, got.Requeue, tt.wantRequeue)
-			// We just check that the requeue is not zero
-			require.True(t, got.RequeueAfter > 0)
+			if tt.wantRequeue {
+				require.True(t, got.RequeueAfter > 0)
+			}
+		})
+	}
+}
+
+func Test_reconcileApmServerToken(t *testing.T) {
+	apm := &apmv1.ApmServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "ns",
+			Name:      "apm",
+		},
+	}
+	tests := []struct {
+		name       string
+		c          k8s.Client
+		reuseToken []byte
+	}{
+		{
+			name: "no secret exists: create one",
+			c:    k8s.WrappedFakeClient(),
+		},
+		{
+			name: "reuse token if it already exists",
+			c: k8s.WrappedFakeClient(&corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "ns",
+					Name:      apmname.SecretToken(apm.Name),
+				},
+				Data: map[string][]byte{
+					SecretTokenKey: []byte("existing"),
+				},
+			}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := reconcileApmServerToken(tt.c, apm)
+			require.NoError(t, err)
+			require.NotEmpty(t, got.Data[SecretTokenKey])
+			if tt.reuseToken != nil {
+				require.Equal(t, tt.reuseToken, got.Data[SecretTokenKey])
+			}
 		})
 	}
 }

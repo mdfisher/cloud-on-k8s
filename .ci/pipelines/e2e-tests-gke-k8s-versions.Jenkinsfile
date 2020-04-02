@@ -1,3 +1,7 @@
+// This library overrides the default checkout behavior to enable sleep+retries if there are errors
+// Added to help overcome some recurring github connection issues
+@Library('apm@current') _
+
 def failedTests = []
 def lib
 
@@ -28,17 +32,6 @@ pipeline {
         }
         stage('Run tests for different k8s versions in GKE') {
             parallel {
-                stage("1.13") {
-                    agent {
-                        label 'linux'
-                    }
-                    steps {
-                        checkout scm
-                        script {
-                            runWith(lib, failedTests, '1.13', "eck-gke13-${BUILD_NUMBER}-e2e")
-                        }
-                    }
-                }
                 stage("1.14") {
                     agent {
                         label 'linux'
@@ -86,7 +79,7 @@ pipeline {
         }
         cleanup {
             script {
-                clusters = ["eck-gke13-${BUILD_NUMBER}-e2e", "eck-gke14-${BUILD_NUMBER}-e2e", "eck-gke15-${BUILD_NUMBER}-e2e"]
+                clusters = ["eck-gke14-${BUILD_NUMBER}-e2e", "eck-gke15-${BUILD_NUMBER}-e2e"]
                 for (int i = 0; i < clusters.size(); i++) {
                     build job: 'cloud-on-k8s-e2e-cleanup',
                         parameters: [string(name: 'JKS_PARAM_GKE_CLUSTER', value: clusters[i])],
@@ -101,7 +94,7 @@ pipeline {
 def runWith(lib, failedTests, clusterVersion, clusterName) {
     sh ".ci/setenvconfig e2e/gke-k8s-versions $clusterVersion $clusterName"
     script {
-        env.SHELL_EXIT_CODE = sh(returnStatus: true, script: 'make -C .ci get-test-license get-elastic-public-key TARGET=ci-e2e ci')
+        env.SHELL_EXIT_CODE = sh(returnStatus: true, script: 'make -C .ci get-test-artifacts TARGET=ci-e2e ci')
 
         sh 'make -C .ci TARGET=e2e-generate-xml ci'
         junit "e2e-tests.xml"

@@ -23,7 +23,6 @@ import (
 	"go.elastic.co/apm"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,7 +46,6 @@ func NewReconciler(mgr manager.Manager, accessReviewer rbac.AccessReviewer, para
 	return &ReconcileRemoteCa{
 		Client:         c,
 		accessReviewer: accessReviewer,
-		scheme:         mgr.GetScheme(),
 		watches:        watches.NewDynamicWatches(),
 		recorder:       mgr.GetEventRecorderFor(name),
 		licenseChecker: license.NewLicenseChecker(c, params.OperatorNamespace),
@@ -62,7 +60,6 @@ type ReconcileRemoteCa struct {
 	k8s.Client
 	operator.Parameters
 	accessReviewer rbac.AccessReviewer
-	scheme         *runtime.Scheme
 	recorder       record.EventRecorder
 	watches        watches.DynamicWatches
 	licenseChecker license.Checker
@@ -88,20 +85,8 @@ func (r *ReconcileRemoteCa) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	if common.IsPaused(es.ObjectMeta) {
-		log.Info("Object is paused. Skipping reconciliation", "namespace", es.Namespace, "es_name", es.Name)
-		return common.PauseRequeue, nil
-	}
-
-	enabled, err := r.licenseChecker.EnterpriseFeaturesEnabled()
-	if err != nil {
-		return defaultRequeue, err
-	}
-	if !enabled {
-		log.Info(
-			"Remote cluster controller is an enterprise feature. Enterprise features are disabled",
-			"namespace", es.Namespace, "es_name", es.Name,
-		)
+	if common.IsUnmanaged(es.ObjectMeta) {
+		log.Info("Object is currently not managed by this controller. Skipping reconciliation", "namespace", es.Namespace, "es_name", es.Name)
 		return reconcile.Result{}, nil
 	}
 
@@ -136,6 +121,18 @@ func doReconcile(
 	expectedRemoteClusters, err := getExpectedRemoteClusters(ctx, r.Client, localEs)
 	if err != nil {
 		return reconcile.Result{}, err
+	}
+
+	enabled, err := r.licenseChecker.EnterpriseFeaturesEnabled()
+	if err != nil {
+		return defaultRequeue, err
+	}
+	if !enabled && len(expectedRemoteClusters) > 0 {
+		log.V(1).Info(
+			"Remote cluster controller is an enterprise feature. Enterprise features are disabled",
+			"namespace", localEs.Namespace, "es_name", localEs.Name,
+		)
+		return reconcile.Result{}, nil
 	}
 
 	// Get all the clusters to which this reconciled cluster is connected to according to the existing remote CAs.

@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -53,7 +52,7 @@ func TestReconcileStatefulSet(t *testing.T) {
 	tests := []struct {
 		name                    string
 		c                       k8s.Client
-		expected                v1.StatefulSet
+		expected                appsv1.StatefulSet
 		wantExpectationsUpdated bool
 	}{
 		{
@@ -78,7 +77,7 @@ func TestReconcileStatefulSet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			exp := expectations.NewExpectations(tt.c)
-			returned, err := ReconcileStatefulSet(tt.c, scheme.Scheme, es, tt.expected, exp)
+			returned, err := ReconcileStatefulSet(tt.c, es, tt.expected, exp)
 			require.NoError(t, err)
 
 			// expect owner ref to be set to the es resource

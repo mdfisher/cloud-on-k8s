@@ -33,6 +33,7 @@ require (
 	github.com/prometheus/client_model v0.0.0-20190812154241-14fe0d1b01d4 // indirect
 	github.com/prometheus/common v0.7.0 // indirect
 	github.com/prometheus/procfs v0.0.5 // indirect
+	github.com/sethvargo/go-password v0.1.3
 	github.com/spf13/cobra v0.0.5
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5
@@ -42,6 +43,7 @@ require (
 	github.com/tsenart/vegeta v12.7.0+incompatible
 	go.elastic.co/apm v1.7.0
 	go.elastic.co/apm/module/apmelasticsearch v1.7.0
+	go.uber.org/automaxprocs v1.3.0
 	go.uber.org/zap v1.12.0
 	golang.org/x/crypto v0.0.0-20191011191535-87dc89f01550
 	golang.org/x/net v0.0.0-20191011234655-491137f69257 // indirect
@@ -58,3 +60,6 @@ require (
 	sigs.k8s.io/controller-runtime v0.5.0
 	sigs.k8s.io/controller-tools v0.2.5
 )
+
+// this is used by vegeta, but the version they use is older and did not include a licence. we require the licence and so pin this
+replace github.com/dgryski/go-gk => github.com/dgryski/go-gk v0.0.0-20200319235926-a69029f61654
